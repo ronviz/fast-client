@@ -1,2 +1,83 @@
-# fast-client
-A lightweight, RPC-like client for FastAPI that turns your server routes into fully-typed client methods while preserving native Python exception handling across the HTTP boundary
+# FastClient
+
+A lightweight, dynamic Python client for FastAPI applications that automatically maps API routes into native pythonic methods with seamless Pydantic model deserialization and custom exception propagation.
+
+---
+
+## Features
+
+- **Dynamic Route Binding**: Converts FastAPI `APIRoute` metadata directly into native client instance methods.
+- **Pydantic Model Deserialization**: Parses input request payloads and automatically validates response models.
+- **Custom Exception Auto-Raising**: Captures structured server error payloads (`ErrorDetail`) and raises matching custom Python exception classes.
+
+---
+
+## Installation
+
+Install `fast-client` alongside your FastAPI dependencies:
+
+```bash
+pip install fast-client
+```
+
+## Quickstart
+Define Server Models & Custom Exceptions
+```python
+from fastapi import FastAPI
+from pydantic import BaseModel
+from fast_client import BaseAPIException, register_exceptions
+
+app = FastAPI()
+
+# Register exception handlers on your FastAPI app
+register_exceptions(app)
+
+
+class User(BaseModel):
+    id: str
+    name: str
+
+
+class UserNotFoundError(BaseAPIException):
+    status_code = 404
+    message = "User not found"
+
+
+@app.get("/users/{user_id}", response_model=User)
+def get_user(user_id: str):
+    if user_id != "1":
+        raise UserNotFoundError(details={"user_id": user_id})
+    return User(id="1", name="Alice")
+```
+
+Instantiate and Call FastClient
+```python
+from fast_client import FastClient
+
+# Connect to a running server or pass the ASGI app directly
+client = FastClient(base_url="http://localhost:8000", app=app)
+
+# 1. Successful request returning Pydantic User instance
+user = client.get_user(user_id="1")
+print(user.name)  # Output: "Alice"
+
+# 2. Failed request automatically raising your custom exception
+try:
+    client.get_user(user_id="999")
+except UserNotFoundError as err:
+    print(err.status_code)  # Output: 404
+    print(err.message)      # Output: "User not found"
+    print(err.details)      # Output: {'user_id': '999'}
+```
+
+## Development & Testing
+fast-client uses `uv` and standard `pytest` for development and testing.
+### Install Development Dependencies
+```bash
+uv sync --dev
+```
+### Run Tests
+Execute unit and end-to-end integration tests:
+```bash
+uv run pytest
+```
