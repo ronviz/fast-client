@@ -50,24 +50,48 @@ def get_user(user_id: str):
     return User(id="1", name="Alice")
 ```
 
-Instantiate and Call FastClient
+### 2. Instantiate and Call `FastClient`
+
+`FastClient` requires a context manager session to manage network resources and connections. Use standard `with` for synchronous execution or `async with` for asynchronous calls.
+
+#### Synchronous Usage (`with`)
+
 ```python
 from fastclient import FastClient
 
-# Connect to a running server or pass the ASGI app directly
-client = FastClient(base_url="http://localhost:8000", app=app)
-
 # 1. Successful request returning Pydantic User instance
-user = client.get_user(user_id="1")
-print(user.name)  # Output: "Alice"
+with FastClient(base_url="http://localhost:8000", app=app) as client:
+    user = client.get_user(user_id="1")
+    print(user.name)  # Output: "Alice"
 
-# 2. Failed request automatically raising your custom exception
-try:
-    client.get_user(user_id="999")
-except UserNotFoundError as err:
-    print(err.status_code)  # Output: 404
-    print(err.message)      # Output: "User not found"
-    print(err.details)      # Output: {'user_id': '999'}
+    # 2. Failed request automatically raising your custom exception
+    try:
+        client.get_user(user_id="999")
+    except UserNotFoundError as err:
+        print(err.status_code)  # Output: 404
+        print(err.message)      # Output: "User not found"
+        print(err.details)      # Output: {'user_id': '999'}
+```
+
+#### Asynchronous Usage (`async with`)
+```python
+import asyncio
+from fastclient import FastClient
+
+async def main():
+    async with FastClient(base_url="http://localhost:8000", app=app) as client:
+        # 1. Async successful request
+        user = await client.get_user(user_id="1")
+        print(user.name)  # Output: "Alice"
+
+        # 2. Async failed request
+        try:
+            await client.get_user(user_id="999")
+        except UserNotFoundError as err:
+            print(err.status_code)  # Output: 404
+            print(err.message)      # Output: "User not found"
+
+asyncio.run(main())
 ```
 
 ## Development & Testing

@@ -1,4 +1,4 @@
-from typing import Any, Callable, Dict, Sequence, Tuple, Union, cast
+from typing import Any, Callable, Dict, Optional, Tuple, Union, cast
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
 import httpx
@@ -18,9 +18,8 @@ class FastClient:
     ):
         self.base_url = base_url.rstrip("/")
         self._app = resolve_app(app)
-        self._http = httpx.Client(base_url=self.base_url)
-
-        self._bind_app_routes()
+        self._http = None
+        self._bound_route_methods = []
 
     @staticmethod
     def _raise_for_api_error(response: httpx.Response) -> None:
@@ -117,38 +116,32 @@ class FastClient:
 
         return raw_json
 
-    def _bind_app_routes(self) -> None:
-        """Iterates over app.routes and dynamically attaches methods."""
-        for route in self._app.routes:
-            if not isinstance(route, APIRoute):
-                continue
-
-            method_name = route.endpoint.__name__
-            bound_method = self._create_route_method(route)
-            setattr(self, method_name, bound_method)
-
-    def _create_route_method(self, route: APIRoute) -> Callable[..., Any]:
-        """Generates a callable client method using APIRoute metadata."""
+    def _prepare_request_args(
+        self, route: APIRoute, kwargs: Dict[str, Any]
+    ) -> Tuple[str, str, Optional[Dict[str, Any]], Any]:
+        """Categorizes input arguments into HTTP method, formatted URL path, query params, and json body."""
+        input_kwargs = dict(kwargs)
         http_method = next(iter(route.methods)).lower()
 
+        formatted_path = self._format_path_params(route.path, route, input_kwargs)
+        json_body = self._extract_body_param(route, input_kwargs)
+        query_params = self._extract_query_params(route, input_kwargs)
+
+        return (
+            http_method,
+            formatted_path,
+            query_params if query_params else None,
+            json_body,
+        )
+
+    def _create_sync_route_method(self, route: APIRoute) -> Callable[..., Any]:
+        """Generates a callable client method using APIRoute metadata."""
+
         def route_method(**kwargs) -> Any:
-            # Copy kwargs so we can pop values as we categorize them
-            input_kwargs = dict(kwargs)
-
-            # 1. Map parameters using APIRoute metadata
-            formatted_path = self._format_path_params(route.path, route, input_kwargs)
-            json_body = self._extract_body_param(route, input_kwargs)
-            query_params = self._extract_query_params(route, input_kwargs)
-
-            # 2. Execute HTTP request
+            method, url, params, json_body = self._prepare_request_args(route, kwargs)
             response = self._http.request(
-                method=http_method,
-                url=formatted_path,
-                params=query_params if query_params else None,
-                json=json_body,
+                method=method, url=url, params=params, json=json_body
             )
-
-            # 3. Handle errors & return deserialized body
             self._raise_for_api_error(response)
             return self._deserialize_response(route, response)
 
@@ -158,3 +151,61 @@ class FastClient:
 
         return route_method
 
+    def _create_async_route_method(self, route: APIRoute) -> Callable[..., Any]:
+        """Generates a callable client method using APIRoute metadata."""
+
+        async def route_method(**kwargs) -> Any:
+            method, url, params, json_body = self._prepare_request_args(route, kwargs)
+            response = await self._http.request(
+                method=method, url=url, params=params, json=json_body
+            )
+            self._raise_for_api_error(response)
+            return self._deserialize_response(route, response)
+
+        # Preserve original docstring and endpoint name
+        route_method.__name__ = route.endpoint.__name__
+        route_method.__doc__ = route.endpoint.__doc__
+
+        return route_method
+
+    def _bind_app_routes(
+        self, method_generator: Callable[[APIRoute], Callable[..., Any]]
+    ) -> None:
+        """Iterates over app.routes and dynamically attaches methods."""
+        for route in self._app.routes:
+            if not isinstance(route, APIRoute):
+                continue
+
+            method_name = route.endpoint.__name__
+            bound_method = method_generator(route)
+            self._bound_route_methods.append(bound_method)
+            setattr(self, method_name, bound_method)
+
+    def _detach_app_routes(self):
+        for method in self._bound_route_methods:
+            if hasattr(self, method):
+                delattr(self, method)
+
+    def __enter__(self):
+        self._http = httpx.Client(base_url=self.base_url)
+        self._bind_app_routes(method_generator=self._create_sync_route_method)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if isinstance(self._http, httpx.Client):
+            self._http.close()
+            self._http = None
+        self._detach_app_routes()
+
+    async def __aenter__(self):
+        self._http = httpx.AsyncClient(
+            base_url=self.base_url,
+        )
+        self._bind_app_routes(method_generator=self._create_async_route_method)
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if isinstance(self._http, httpx.AsyncClient):
+            await self._http.aclose()
+            self._http = None
+        self._detach_app_routes()
